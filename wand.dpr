@@ -23,7 +23,7 @@ var
   sheet: TShtCtl;
   mouse, win, back: integer;
   s: string;
-  buf_win, buf_back, keybuf, buf_mouse: TBytes;
+  buf_win, buf_back, buf_key, buf_mouse: TBytes;
   mx, my: integer;
 
 procedure window8(buf: TBytes; xsize, ysize: integer; title: string);
@@ -85,7 +85,6 @@ end;
 
 begin
   screen := TScreen.Create;
-  screen.Init(binfo^.vram, binfo^.scrnx, binfo^.scrny);
   keyboard := TKeyboard.Create;
   mousefifo := TMouse.Create;
   {
@@ -106,11 +105,12 @@ begin
   sheet.slide(mouse, 10, 10);
   sheet.slide(win, 80, 72);
   SetLength(buf_win, 160 * 68);
-  SetLength(keybuf, 32);
+  SetLength(buf_key, 32);
   SetLength(buf_mouse, 128);
   sheet.setbuf(back, buf_back, binfo^.scrnx, binfo^.scrny, -1);
   sheet.setbuf(mouse, buf_mouse, 16, 16, 99);
   sheet.setbuf(win, buf_win, 160, 68, -1);
+  screen.Init(binfo^.vram, binfo^.scrnx, binfo^.scrny);
   font.mouse_cursor8(buf_mouse, 99);
   window8(buf_win, 160, 68, 'window');
   font.putfonts8_asc(buf_win, 160, 24, 28, COL8_000000, 'Welcom to');
@@ -126,7 +126,7 @@ begin
   font.putfonts8_asc(binfo^.vram, binfo^.scrnx, 0, 32, COL8_FFFFFF, s);
   sheet.refresh(Rect(0, 0, 80, 16));
   mousefifo.fifo.Init(mousefifo.fifo8, 128, buf_mouse);
-  keyboard.fifo.Init(keyboard.fifo8, 32, keybuf);
+  keyboard.fifo.Init(keyboard.fifo8, 32, buf_key);
   while True do
   begin
     io_cli;
@@ -185,7 +185,9 @@ begin
   sheet.Free;
   keyboard.Free;
   mousefifo.Free;
-  Finalize(keybuf);
+  Finalize(buf_win);
+  Finalize(buf_key);
+  Finalize(buf_mouse);
   screen.Free;
 
 end.

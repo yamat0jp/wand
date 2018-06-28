@@ -616,7 +616,7 @@ begin
     SetLength(buf, 16);
     for i := 1 to Length(s) do
     begin
-      hankaku.Write(buf, Ord(s[i])-Ord('a'), 16);
+      hankaku.Write(buf, Ord(s[i]), 16);
       putfont8(vram, xsize, x, y, c, buf);
       inc(x, 8);
     end;
