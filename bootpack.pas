@@ -20,8 +20,8 @@ type
     procedure setp(start, endpos: integer; rgb: TBytes);
     procedure putfont8(vram: TBytes; xsize, x, y: integer; c: Int8;
       font: TBytes);
-    procedure putfont8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
-      s: UInt8);
+    procedure putfonts8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
+      s: PAnsiChar);
     procedure mouse_cursor8(mouse: TBytes; bc: Int8);
   end;
 
@@ -45,7 +45,7 @@ type
     function Status(var fifo: TFIFO8): integer;
   end;
 
-  TKeyboard = class
+  TDevice = class
   const
     PORT_KEYDAT = $0060;
     PORT_KEYSTA = $0064;
@@ -53,15 +53,37 @@ type
     KEYSTA_SEND_NOTREADY = $02;
     KEYCMD_WRITE_MODE = $60;
     KBC_MODE = $47;
-  private
+  protected
     procedure wait_KBC_sendready;
   public
-    fifo: TFIFO8;
-    keyfifo: TFifo;
+    fifo8: TFIFO8;
+    fifo: TFifo;
     constructor Create;
     destructor Destroy; override;
-    procedure Init;
-    procedure inthandler21(var esp: integer);
+    procedure Init; virtual; abstract;
+    procedure inthandler21(var esp: integer); virtual; abstract;
+  end;
+
+  TKeyboard = class(TDevice)
+  public
+    procedure Init; override;
+    procedure inthandler21(var esp: integer); override;
+  end;
+
+  TMOUSE_DEC = record
+    buf: array [0 .. 2] of Byte;
+    phase: Byte;
+    x, y, btn: integer;
+  end;
+
+  TMouse = class(TDevice)
+  const
+    KEYCMD_SENDTO_MOUSE = $D4;
+    MOUSECMD_ENABLE = $F4;
+  public
+    procedure enable_mouse(DEC: TMOUSE_DEC);
+    function decode(DEC: TMOUSE_DEC; dat: UInt8): integer;
+    procedure inthandler21(var esp: integer); override;
   end;
 
   TMemtest = class
@@ -130,7 +152,7 @@ const
   PIC1_ICW3 = $00A1;
   PIC1_ICW4 = $00A1;
 
-  COL8_000000 = 0;
+  COL8_000000: Int8 = 0;
   COL8_FF0000 = 1;
   COL8_00FF00 = 2;
   COL8_FFFF00 = 3;
@@ -147,7 +169,7 @@ const
   COL8_008484 = 14;
   COL8_848484 = 15;
 
-  ADR_BOOTINFO = $00000ff0;
+  ADR_BOOTINFO = $00000FF0;
 
 implementation
 
@@ -191,51 +213,13 @@ begin
   inc(fifo.p);
   if fifo.p = fifo.size then
     fifo.p := 0;
-  dec(fifo.free);
+  DEC(fifo.free);
   result := 0;
 end;
 
 function TFifo.Status(var fifo: TFIFO8): integer;
 begin
   result := fifo.size - fifo.free;
-end;
-
-{ TKeyboard }
-
-constructor TKeyboard.Create;
-begin
-  inherited;
-  keyfifo := TFifo.Create;
-end;
-
-destructor TKeyboard.Destroy;
-begin
-  keyfifo.free;
-  inherited;
-end;
-
-procedure TKeyboard.Init;
-begin
-  wait_KBC_sendready;
-  io_out8(PORT_KEYCMD, KEYCMD_WRITE_MODE);
-  wait_KBC_sendready;
-  io_out8(PORT_KEYDAT, KBC_MODE)
-end;
-
-procedure TKeyboard.inthandler21(var esp: integer);
-var
-  i: UInt8;
-begin
-  io_out8(PIC0_OCW2, $61);
-  i := io_in8(PORT_KEYDAT);
-  keyfifo.Put(fifo, i);
-end;
-
-procedure TKeyboard.wait_KBC_sendready;
-begin
-  while True do
-    if io_in8(PORT_KEYSTA) and KEYSTA_SEND_NOTREADY = 0 then
-      break;
 end;
 
 { TMemtest }
@@ -317,7 +301,7 @@ begin
       s := mem.free[i];
       result := s.addr;
       inc(s.addr, size);
-      dec(s.size, size);
+      DEC(s.size, size);
       if s.size = 0 then
         mem.free.delete(i)
       else
@@ -616,14 +600,14 @@ begin
   end;
 end;
 
-procedure TPallet.putfont8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
-  s: UInt8);
+procedure TPallet.putfonts8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
+  s: PAnsiChar);
 var
   hankaku: TBytes;
 begin
-  while s <> $00 do
+  while Byte(s[0]) <> $00 do
   begin
-    putfont8(vram, xsize, x, y, c, @hankaku[s * 16]);
+    putfont8(vram, xsize, x, y, c, @hankaku[Byte(s) * 16]);
     inc(s);
     inc(x, 8);
   end;
@@ -679,6 +663,104 @@ begin
   boxfill8(vram, x, COL8_848484, x - 47, y - 23, x - 47, y - 4);
   boxfill8(vram, x, COL8_FFFFFF, x - 47, y - 3, x - 4, y - 3);
   boxfill8(vram, x, COL8_FFFFFF, x - 3, y - 24, x - 3, y - 3);
+end;
+
+{ TMouse }
+
+function TMouse.decode(DEC: TMOUSE_DEC; dat: UInt8): integer;
+begin
+  result:=0;
+  case DEC.phase of
+    0:
+      if dat = $FA then
+        DEC.phase := 1;
+    1:
+      if (dat and $CB) = $08 then
+      begin
+        DEC.buf[0] := dat;
+        DEC.phase := 2;
+      end;
+    2:
+      begin
+        DEC.buf[1] := dat;
+        DEC.phase := 3;
+      end;
+    3:
+      begin
+        DEC.buf[2] := dat;
+        DEC.phase := 1;
+        DEC.btn := DEC.buf[0] and $07;
+        DEC.x := DEC.buf[1];
+        DEC.y := DEC.buf[2];
+        if (DEC.buf[0] and $10) <> 0 then
+          DEC.x := DEC.x or $FFFFFF00;
+        if (DEC.buf[0] and $20) <> 0 then
+          DEC.y := DEC.y or $FFFFFF00;
+        DEC.y := -DEC.y;
+        result:=1;
+      end;
+  else
+    result:=-1;
+  end;
+end;
+
+procedure TMouse.enable_mouse(DEC: TMOUSE_DEC);
+begin
+  wait_KBC_sendready;
+  io_out8(PORT_KEYCMD, KEYCMD_SENDTO_MOUSE);
+  wait_KBC_sendready;
+  io_out8(PORT_KEYDAT, MOUSECMD_ENABLE);
+  DEC.phase := 0;
+end;
+
+procedure TMouse.inthandler21(var esp: integer);
+var
+  i: integer;
+begin
+  io_out8(PIC1_OCW2, $64);
+  io_out8(PIC0_OCW2, $62);
+  i := io_in8(PORT_KEYDAT);
+  fifo.Put(fifo8, i);
+end;
+
+{ TDevice }
+
+constructor TDevice.Create;
+begin
+  inherited;
+  fifo := TFifo.Create;
+end;
+
+destructor TDevice.Destroy;
+begin
+  fifo.free;
+  inherited;
+end;
+
+procedure TDevice.wait_KBC_sendready;
+begin
+  while True do
+    if io_in8(PORT_KEYSTA) and KEYSTA_SEND_NOTREADY = 0 then
+      break;
+end;
+
+{ TKeyboard }
+
+procedure TKeyboard.Init;
+begin
+  wait_KBC_sendready;
+  io_out8(PORT_KEYCMD, KEYCMD_WRITE_MODE);
+  wait_KBC_sendready;
+  io_out8(PORT_KEYDAT, KBC_MODE)
+end;
+
+procedure TKeyboard.inthandler21(var esp: integer);
+var
+  i: UInt8;
+begin
+  io_out8(PIC0_OCW2, $61);
+  i := io_in8(PORT_KEYDAT);
+  fifo.Put(fifo8, i);
 end;
 
 end.
