@@ -21,7 +21,7 @@ type
     procedure putfont8(vram: TBytes; xsize, x, y: integer; c: Int8;
       font: TBytes);
     procedure putfonts8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
-      s: PAnsiChar);
+      s: string);
     procedure mouse_cursor8(mouse: TBytes; bc: Int8);
   end;
 
@@ -81,8 +81,10 @@ type
     KEYCMD_SENDTO_MOUSE = $D4;
     MOUSECMD_ENABLE = $F4;
   public
-    procedure enable_mouse(DEC: TMOUSE_DEC);
-    function decode(DEC: TMOUSE_DEC; dat: UInt8): integer;
+    dec: TMOUSE_DEC;
+    procedure Init; override;
+    procedure enable_mouse;
+    function decode(dat: UInt8): integer;
     procedure inthandler21(var esp: integer); override;
   end;
 
@@ -213,7 +215,7 @@ begin
   inc(fifo.p);
   if fifo.p = fifo.size then
     fifo.p := 0;
-  DEC(fifo.free);
+  dec(fifo.free);
   result := 0;
 end;
 
@@ -301,7 +303,7 @@ begin
       s := mem.free[i];
       result := s.addr;
       inc(s.addr, size);
-      DEC(s.size, size);
+      dec(s.size, size);
       if s.size = 0 then
         mem.free.delete(i)
       else
@@ -601,15 +603,26 @@ begin
 end;
 
 procedure TPallet.putfonts8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
-  s: PAnsiChar);
+  s: string);
 var
-  hankaku: TBytes;
+  hankaku: TMemoryStream;
+  buf: TBytes;
+  i: integer;
 begin
-  while Byte(s[0]) <> $00 do
-  begin
-    putfont8(vram, xsize, x, y, c, @hankaku[Byte(s) * 16]);
-    inc(s);
-    inc(x, 8);
+  s:=LowerCase(s);
+  hankaku := TMemoryStream.Create;
+  try
+    hankaku.LoadFromFile('hankaku.bin');
+    SetLength(buf, 16);
+    for i := 1 to Length(s) do
+    begin
+      hankaku.Write(buf, Ord(s[i])-Ord('a'), 16);
+      putfont8(vram, xsize, x, y, c, buf);
+      inc(x, 8);
+    end;
+  finally
+    Finalize(buf);
+    hankaku.free;
   end;
 end;
 
@@ -667,50 +680,61 @@ end;
 
 { TMouse }
 
-function TMouse.decode(DEC: TMOUSE_DEC; dat: UInt8): integer;
+function TMouse.decode(dat: UInt8): integer;
 begin
-  result:=0;
-  case DEC.phase of
+  result := 0;
+  case dec.phase of
     0:
       if dat = $FA then
-        DEC.phase := 1;
+        with dec do
+          phase := 1;
     1:
       if (dat and $CB) = $08 then
-      begin
-        DEC.buf[0] := dat;
-        DEC.phase := 2;
-      end;
+        with dec do
+        begin
+          buf[0] := dat;
+          phase := 2;
+        end;
     2:
+      with dec do
       begin
-        DEC.buf[1] := dat;
-        DEC.phase := 3;
+        buf[1] := dat;
+        phase := 3;
       end;
     3:
       begin
-        DEC.buf[2] := dat;
-        DEC.phase := 1;
-        DEC.btn := DEC.buf[0] and $07;
-        DEC.x := DEC.buf[1];
-        DEC.y := DEC.buf[2];
-        if (DEC.buf[0] and $10) <> 0 then
-          DEC.x := DEC.x or $FFFFFF00;
-        if (DEC.buf[0] and $20) <> 0 then
-          DEC.y := DEC.y or $FFFFFF00;
-        DEC.y := -DEC.y;
-        result:=1;
+        with dec do
+        begin
+          buf[2] := dat;
+          phase := 1;
+          btn := dec.buf[0] and $07;
+          x := dec.buf[1];
+          y := dec.buf[2];
+          if (buf[0] and $10) <> 0 then
+            x := x or $FFFFFF00;
+          if (buf[0] and $20) <> 0 then
+            y := y or $FFFFFF00;
+          y := -y;
+        end;
+        result := 1;
       end;
   else
-    result:=-1;
+    result := -1;
   end;
 end;
 
-procedure TMouse.enable_mouse(DEC: TMOUSE_DEC);
+procedure TMouse.enable_mouse;
 begin
   wait_KBC_sendready;
   io_out8(PORT_KEYCMD, KEYCMD_SENDTO_MOUSE);
   wait_KBC_sendready;
   io_out8(PORT_KEYDAT, MOUSECMD_ENABLE);
-  DEC.phase := 0;
+  dec.phase := 0;
+end;
+
+procedure TMouse.Init;
+begin
+
 end;
 
 procedure TMouse.inthandler21(var esp: integer);

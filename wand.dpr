@@ -22,11 +22,11 @@ var
   mem: TMem;
   sheet: TShtCtl;
   mouse, win, back: integer;
-  s: string[40];
+  s: string;
   buf_win, buf_back, keybuf, buf_mouse: TBytes;
   mx, my: integer;
 
-procedure window8(buf: TBytes; xsize, ysize: integer; title: PAnsiChar);
+procedure window8(buf: TBytes; xsize, ysize: integer; title: string);
 const
   closebtn: array [0 .. 14] of string[16] = ( //
     ('000000000000000@'), //
@@ -123,10 +123,10 @@ begin
   sheet.updown(mouse, 1);
   sheet.updown(win, 2);
   // sprintf
-  font.putfonts8_asc(binfo^.vram, 0, 32, COL8_FFFFFF, s);
+  font.putfonts8_asc(binfo^.vram, binfo^.scrnx, 0, 32, COL8_FFFFFF, s);
   sheet.refresh(Rect(0, 0, 80, 16));
-  mousefifo.Init(mousefifo.fifo8, 128, buf_mouse);
-  keyboard.Init(keyboard.fifo8, 32, keybuf);
+  mousefifo.fifo.Init(mousefifo.fifo8, 128, buf_mouse);
+  keyboard.fifo.Init(keyboard.fifo8, 32, keybuf);
   while True do
   begin
     io_cli;
@@ -148,6 +148,35 @@ begin
       begin
         i := mousefifo.fifo.Get(mousefifo.fifo8);
         io_sti;
+        if mousefifo.decode(i) <> 0 then
+        begin
+          // sprontf
+          if (mousefifo.dec.btn and $01) <> 0 then
+            s[1] := 'L';
+          if (mousefifo.dec.btn and $02) <> 0 then
+            s[3] := 'R';
+          if (mousefifo.dec.btn and $03) <> 0 then
+            s[2] := 'C';
+          screen.boxfill8(buf_back, binfo^.scrnx, COL8_008484, 32, 16,
+            32 + 15 * 8 - 1, 31);
+          font.putfonts8_asc(buf_back, binfo^.scrnx, 32, 16, COL8_FFFFFF, s);
+          sheet.refresh(Rect(32, 16, 32 + 15 * 8, 32));
+          inc(mx, mousefifo.dec.x);
+          inc(my, mousefifo.dec.y);
+          if mx < 0 then
+            mx := 0;
+          if my < 0 then
+            my := 0;
+          if mx > binfo^.scrnx - 1 then
+            mx := binfo^.scrnx - 1;
+          if my > binfo^.scrny - 1 then
+            my := binfo^.scrny - 1;
+          // sprintf
+          screen.boxfill8(buf_back, binfo^.scrnx, COL8_008484, 0, 0, 78, 15);
+          font.putfonts8_asc(buf_back, binfo^.scrnx, 0, 0, COL8_FFFFFF, s);
+          sheet.refresh(Rect(0, 0, 80, 16));
+          sheet.slide(mouse, mx, my);
+        end;
         sheet.refresh(Rect(0, 0, 80, 16));
       end;
     end;
