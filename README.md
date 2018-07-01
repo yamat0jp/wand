@@ -1,2 +1,3 @@
 # wand
-haribote os
+This is a haribote os with compiled DELPHI.
+hariboteosXE
