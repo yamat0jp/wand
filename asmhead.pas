@@ -2,6 +2,13 @@ unit asmhead;
 
 interface
 
+type
+  TAsmhead = class
+  public
+    class procedure Init;
+    class procedure Boot;
+  end;
+
 procedure io_halt;
 procedure io_cli;
 procedure io_sti;
@@ -65,7 +72,7 @@ end;
 function io_in32(port: integer): integer;
 asm
   MOV   EDX,[ESP+4];
-  IN   EAX,DX;
+  IN    EAX,DX;
   RET;
 end;
 
@@ -135,6 +142,134 @@ asm
   MOV   EAX,[ESP+4];
   MOV   CR0,EAX;
   RET;
+end;
+
+{ TAsmhead }
+
+class procedure TAsmhead.Boot;
+const
+  BOTPAK: UInt32 = $00280000;
+  DSKCAC: UInt32 = $00100000;
+  DSKCAC0: UInt32 = $00008000;
+
+  CYLS: UInt16 = $0ff0;
+  LEDS: UInt16 = $0ff1;
+  VMODE: UInt16 = $0ff2;
+  SCRNX: UInt16 = $0ff4;
+  SCRNY: UInt16 = $0ff6;
+  VRAM: UInt16 = $0ff8;
+  asm
+    // ORG
+
+    MOV   AL,$13
+    MOV   AH,$00
+    INT   $10
+    MOV   BYTE PTR [VMODE],8
+    MOV   WORD PTR [SCRNX],320
+    MOV   WORD PTR [SCRNY],200
+    MOV   DWORD PTR [VRAM],$000a0000
+
+    MOV   AH,$02
+    INT   $16
+    MOV   BYTE PTR [LEDS],AL
+
+    MOV   AL,$ff
+    OUT   $21,AL
+    NOP
+    OUT   $a1,AL
+
+    CLI
+
+    CALL  @waitkbdout
+
+    MOV   AL,$d1
+    OUT   $64,AL
+    CALL  @waitkbdout
+    MOV   AL,$df
+    OUT   $60,AL
+    CALL  @waitkbdout
+
+    // LGDT
+    MOV   EAX,CR0
+    AND   EAX,$7FFFFFFF
+    OR    EAX,$00000001
+    MOV   CR0,EAX
+    JMP   @pipelineflush
+
+  @pipelineflush:
+    MOV   AX,1*8
+    MOV   DS,AX
+    MOV   ES,AX
+    MOV   FS,AX
+    MOV   GS,AX
+    MOV   SS,AX
+
+    MOV   ESI,DWORD PTR @bootpack
+    MOV   EDI,BOTPAK
+    MOV   ECX,512*1024/4
+    CALL  @memcpy
+
+    MOV   ESI,$7C00
+    MOV   EDI,DSKCAC
+    MOV   ECX,512/4
+    CALL  @memcpy
+
+    MOV   ESI,DSKCAC0+512
+    MOV   EDI,DSKCAC+512
+    MOV   ECX,0
+    MOV   CL,BYTE PTR [CYLS]
+    IMUL  ECX,512*18*2/4
+    SUB   ECX,512/4
+    CALL  @memcpy
+
+    MOV   EBX,BOTPAK
+    MOV   ECX,[EBX+16]
+    ADD   ECX,3
+    SHR   ECX,2
+    JZ    @skip
+    MOV   ESI,[EBX+20]
+    ADD   ESI,EBX
+    MOV   EDI,[EBX+12]
+    CALL  @memcpy
+
+  @skip:
+    MOV   ESP,[EBX+12]
+    //JMP   DWORD PTR 2*8:$0000001b
+
+  @waitkbdout:
+    IN    AL,$64
+    AND   AL,$02
+    JNZ   @waitkbdout
+    RET
+  @memcpy:
+    MOV   EAX,[ESI]
+    ADD   ESI,4
+    MOV   EDI,[EAX]
+    ADD   EDI,4
+    SUB   ECX,1
+    JNZ   @memcpy
+    RET
+
+    // ALIGNB
+  @GDT0:
+    // RESB
+    DW    $ffff,$0000,$9200,$00cf
+    DW    $ffff,$0000,$9a28,$0047
+
+    DW    0
+  @GDTR0:
+    DW    8*3-1
+    DD    @GDT0
+
+    // ALIGNB
+  @bootpack:
+end;
+
+class procedure TAsmhead.Init;
+const
+  CYLS: UInt32 = 10;
+asm
+
 end;
 
 end.

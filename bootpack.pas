@@ -13,9 +13,10 @@ type
   end;
 
   TPallet = class
-  private
-    // function hankaku: TBytes; external 'hankaku.bin';
   public
+    hankaku: TResourceStream;
+    constructor Create;
+    destructor Destroy; override;
     procedure Init;
     procedure setp(start, endpos: integer; rgb: TBytes);
     procedure putfont8(vram: TBytes; xsize, x, y: integer; c: Int8;
@@ -27,7 +28,7 @@ type
 
   TScreen = class
   public
-    procedure Init(vram: TBytes; x, y: integer);
+    constructor Create(vram: TBytes; x, y: integer);
     procedure boxfill8(vram: TBytes; xsize: integer; c: UInt8;
       x0, y0, x1, y1: integer);
   end;
@@ -38,14 +39,16 @@ type
   end;
 
   TFifo = class
+  private
+    fifo: TFIFO8;
   public
-    procedure Init(var fifo: TFIFO8; size: integer; buf: TBytes);
-    function Put(var fifo: TFIFO8; data: Byte): integer;
-    function Get(var fifo: TFIFO8): SmallInt;
-    function Status(var fifo: TFIFO8): integer;
+    constructor Create(size: integer; buf: TBytes);
+    function Put(data: Byte): integer;
+    function Get: SmallInt;
+    function Status: integer;
   end;
 
-  TDevice = class
+  TDevice = class(TFifo)
   const
     PORT_KEYDAT = $0060;
     PORT_KEYSTA = $0064;
@@ -56,17 +59,12 @@ type
   protected
     procedure wait_KBC_sendready;
   public
-    fifo8: TFIFO8;
-    fifo: TFifo;
-    constructor Create;
-    destructor Destroy; override;
-    procedure Init; virtual; abstract;
     procedure inthandler21(var esp: integer); virtual; abstract;
   end;
 
   TKeyboard = class(TDevice)
   public
-    procedure Init; override;
+    constructor Create(size: integer; buf: TBytes);
     procedure inthandler21(var esp: integer); override;
   end;
 
@@ -82,7 +80,6 @@ type
     MOUSECMD_ENABLE = $F4;
   public
     dec: TMOUSE_DEC;
-    procedure Init; override;
     procedure enable_mouse;
     function decode(dat: UInt8): integer;
     procedure inthandler21(var esp: integer); override;
@@ -179,7 +176,7 @@ implementation
 
 uses asmhead;
 
-function TFifo.Get(var fifo: TFIFO8): SmallInt;
+function TFifo.Get: SmallInt;
 begin
   if fifo.free = fifo.size then
   begin
@@ -193,8 +190,10 @@ begin
   inc(fifo.free);
 end;
 
-procedure TFifo.Init(var fifo: TFIFO8; size: integer; buf: TBytes);
+constructor TFifo.Create(size: integer; buf: TBytes);
 begin
+  inherited Create;
+  SetLength(buf,size);
   fifo.size := size;
   fifo.buf := buf;
   fifo.free := size;
@@ -203,7 +202,7 @@ begin
   fifo.q := 0;
 end;
 
-function TFifo.Put(var fifo: TFIFO8; data: Byte): integer;
+function TFifo.Put(data: Byte): integer;
 begin
   if fifo.free = 0 then
   begin
@@ -219,7 +218,7 @@ begin
   result := 0;
 end;
 
-function TFifo.Status(var fifo: TFIFO8): integer;
+function TFifo.Status: integer;
 begin
   result := fifo.size - fifo.free;
 end;
@@ -525,6 +524,18 @@ end;
 
 { TPallet }
 
+constructor TPallet.Create;
+begin
+  inherited;
+  hankaku := TResourceStream.Create(HInstance, 'hankaku', RT_RCDATA);
+end;
+
+destructor TPallet.Destroy;
+begin
+  hankaku.free;
+  inherited;
+end;
+
 procedure TPallet.Init;
 const
   table: array [0 .. 14, 0 .. 2] of Byte = (($00, $00, $00), ($FF, $00, $00),
@@ -533,7 +544,7 @@ const
     ($84, $84, $00), ($00, $00, $84), ($84, $00, $84), ($00, $84, $84),
     ($84, $84, $84));
 begin
-  setp(0, 15, @table);
+  setp(0, 15, TBytes(@table));
 end;
 
 procedure TPallet.mouse_cursor8(mouse: TBytes; bc: Int8);
@@ -581,7 +592,7 @@ var
 begin
   for i := 0 to 16 do
   begin
-    p := @vram[(y + i) * xsize + x];
+    p := TBytes(@vram[(y + i) * xsize + x]);
     d := font[i];
     if d and $80 <> 0 then
       p[0] := c;
@@ -605,24 +616,15 @@ end;
 procedure TPallet.putfonts8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
   s: string);
 var
-  hankaku: TMemoryStream;
-  buf: TBytes;
   i: integer;
+  buf: array [0 .. 15] of Byte;
 begin
-  s:=LowerCase(s);
-  hankaku := TMemoryStream.Create;
-  try
-    hankaku.LoadFromFile('hankaku.bin');
-    SetLength(buf, 16);
-    for i := 1 to Length(s) do
-    begin
-      hankaku.Write(buf, Ord(s[i]), 16);
-      putfont8(vram, xsize, x, y, c, buf);
-      inc(x, 8);
-    end;
-  finally
-    Finalize(buf);
-    hankaku.free;
+  s := LowerCase(s);
+  for i := 1 to Length(s) do
+  begin
+    hankaku.Write(TBytes(@buf), Ord(s[i]), 16);
+    putfont8(vram, xsize, x, y, c, TBytes(@buf));
+    inc(x, 8);
   end;
 end;
 
@@ -658,8 +660,9 @@ begin
       vram[y * xsize + x] := c;
 end;
 
-procedure TScreen.Init(vram: TBytes; x, y: integer);
+constructor TScreen.Create(vram: TBytes; x, y: integer);
 begin
+  inherited Create;
   boxfill8(vram, x, COL8_008484, 0, 0, x - 1, y - 29);
   boxfill8(vram, x, COL8_C6C6C6, 0, y - 28, x - 1, y - 28);
   boxfill8(vram, x, COL8_FFFFFF, 0, y - 27, x - 1, y - 27);
@@ -732,11 +735,6 @@ begin
   dec.phase := 0;
 end;
 
-procedure TMouse.Init;
-begin
-
-end;
-
 procedure TMouse.inthandler21(var esp: integer);
 var
   i: integer;
@@ -744,22 +742,10 @@ begin
   io_out8(PIC1_OCW2, $64);
   io_out8(PIC0_OCW2, $62);
   i := io_in8(PORT_KEYDAT);
-  fifo.Put(fifo8, i);
+  Put(i);
 end;
 
 { TDevice }
-
-constructor TDevice.Create;
-begin
-  inherited;
-  fifo := TFifo.Create;
-end;
-
-destructor TDevice.Destroy;
-begin
-  fifo.free;
-  inherited;
-end;
 
 procedure TDevice.wait_KBC_sendready;
 begin
@@ -770,8 +756,9 @@ end;
 
 { TKeyboard }
 
-procedure TKeyboard.Init;
+constructor TKeyboard.Create(size: integer; buf: TBytes);
 begin
+  inherited;
   wait_KBC_sendready;
   io_out8(PORT_KEYCMD, KEYCMD_WRITE_MODE);
   wait_KBC_sendready;
@@ -784,7 +771,7 @@ var
 begin
   io_out8(PIC0_OCW2, $61);
   i := io_in8(PORT_KEYDAT);
-  fifo.Put(fifo8, i);
+  Put(i);
 end;
 
 end.
