@@ -3,7 +3,8 @@ unit bootpack;
 interface
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, System.Types;
+  System.Classes, System.Generics.Collections, System.SysUtils, System.Types,
+  graphic;
 
 type
   TBOOTINFO = record
@@ -12,29 +13,8 @@ type
     vram: TBytes;
   end;
 
-  TPallet = class
-  public
-    hankaku: TResourceStream;
-    constructor Create;
-    destructor Destroy; override;
-    procedure Init;
-    procedure setp(start, endpos: integer; rgb: TBytes);
-    procedure putfont8(vram: TBytes; xsize, x, y: integer; c: Int8;
-      font: TBytes);
-    procedure putfonts8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
-      s: string);
-    procedure mouse_cursor8(mouse: TBytes; bc: Int8);
-  end;
-
-  TScreen = class
-  public
-    constructor Create(vram: TBytes; x, y: integer);
-    procedure boxfill8(vram: TBytes; xsize: integer; c: UInt8;
-      x0, y0, x1, y1: integer);
-  end;
-
   TFIFO8 = record
-    buf: TBytes;
+    buf: array of UInt32;
     p, q, size, free, flags: integer;
   end;
 
@@ -42,13 +22,14 @@ type
   private
     fifo: TFIFO8;
   public
-    constructor Create(size: integer; buf: TBytes);
+    constructor Create(size: integer);
+    destructor Destroy; override;
     function Put(data: Byte): integer;
     function Get: SmallInt;
     function Status: integer;
   end;
 
-  TDevice = class(TFifo)
+  TDevice = class
   const
     PORT_KEYDAT = $0060;
     PORT_KEYSTA = $0064;
@@ -56,15 +37,19 @@ type
     KEYSTA_SEND_NOTREADY = $02;
     KEYCMD_WRITE_MODE = $60;
     KBC_MODE = $47;
-  protected
+  private
+    fifo: TFifo;
+    buf: array [0 .. 255] of Byte;
     procedure wait_KBC_sendready;
   public
     procedure inthandler21(var esp: integer); virtual; abstract;
   end;
 
   TKeyboard = class(TDevice)
+  private
+    keydata: integer;
   public
-    constructor Create(size: integer; buf: TBytes);
+    constructor Create(fifo: TFifo; data0: integer);
     procedure inthandler21(var esp: integer); override;
   end;
 
@@ -78,9 +63,11 @@ type
   const
     KEYCMD_SENDTO_MOUSE = $D4;
     MOUSECMD_ENABLE = $F4;
+  private
+    mousedata: integer;
   public
     dec: TMOUSE_DEC;
-    procedure enable_mouse;
+    constructor Create(fifo: TFifo; data0: integer);
     function decode(dat: UInt8): integer;
     procedure inthandler21(var esp: integer); override;
   end;
@@ -112,29 +99,6 @@ type
     function memfree(mem: TMEMMAN; addr, size: Cardinal): integer;
   end;
 
-  TSHEET = record
-    buf: TBytes;
-    bxsize, bysize, vx0, vy0, col_inv, flags: integer;
-    visible: Boolean;
-  end;
-
-  TShtCtl = class
-  public
-    vram: TBytes;
-    xsize, ysize: integer;
-    sheets: TList<TSHEET>;
-    constructor Create;
-    destructor Destroy; override;
-    procedure Init(mem: TMEMMAN; x, y: integer);
-    function allock: integer;
-    procedure setbuf(index: integer; buffer: TBytes;
-      xsize, ysize, col_inv: integer);
-    procedure updown(index, height: integer);
-    procedure refresh(rect: TRect);
-    procedure slide(index, x, y: integer);
-    procedure delete(index: integer);
-  end;
-
 const
   FLAGSOVERRUN = $0001;
 
@@ -151,23 +115,6 @@ const
   PIC1_ICW3 = $00A1;
   PIC1_ICW4 = $00A1;
 
-  COL8_000000: Int8 = 0;
-  COL8_FF0000 = 1;
-  COL8_00FF00 = 2;
-  COL8_FFFF00 = 3;
-  COL8_0000FF = 4;
-  COL8_FF00FF = 5;
-  COL8_00FFFF = 6;
-  COL8_FFFFFF = 7;
-  COL8_C6C6C6 = 8;
-  COL8_840000 = 9;
-  COL8_008400 = 10;
-  COL8_848400 = 11;
-  COL8_000084 = 12;
-  COL8_840084 = 13;
-  COL8_008484 = 14;
-  COL8_848484 = 15;
-
   ADR_BOOTINFO = $00000FF0;
 
 implementation
@@ -175,6 +122,12 @@ implementation
 { TFIFO8 }
 
 uses asmhead;
+
+destructor TFifo.Destroy;
+begin
+  Finalize(fifo.buf);
+  inherited;
+end;
 
 function TFifo.Get: SmallInt;
 begin
@@ -190,12 +143,11 @@ begin
   inc(fifo.free);
 end;
 
-constructor TFifo.Create(size: integer; buf: TBytes);
+constructor TFifo.Create(size: integer);
 begin
   inherited Create;
-  SetLength(buf,size);
+  SetLength(fifo.buf, size);
   fifo.size := size;
-  fifo.buf := buf;
   fifo.free := size;
   fifo.flags := 0;
   fifo.p := 0;
@@ -238,7 +190,7 @@ begin
   eflg := eflg or EFLAGS_AC_BIT;
   io_store_eflags(eflg);
   eflg := io_load_eflags();
-  if eflg and EFLAGS_AC_BIT <> 0 then
+  if (eflg and EFLAGS_AC_BIT) <> 0 then
     flag486 := 1;
   eflg := eflg and EFLAGS_AC_BIT;
   io_store_eflags(eflg);
@@ -264,7 +216,6 @@ const
 var
   i, old: UInt32;
   p: ^UInt32;
-label not_memory;
 begin
   i := start;
   while i <= endpos do
@@ -275,13 +226,15 @@ begin
     p^ := p^ XOR $FFFFFFFF;
     if p^ <> pat1 then
     begin
-    not_memory:
       p^ := old;
       break;
     end;
     p^ := p^ XOR $FFFFFFFF;
     if p^ <> pat0 then
-      goto not_memory;
+    begin
+      p^ := old;
+      break;
+    end;
     p^ := old;
     inc(i, $1000);
   end;
@@ -384,304 +337,19 @@ begin
   inherited;
 end;
 
-{ TShtCtl }
+{ TMouse }
 
-constructor TShtCtl.Create;
-begin
-  sheets := TList<TSHEET>.Create;
-end;
-
-procedure TShtCtl.delete(index: integer);
-begin
-  sheets.delete(index);
-end;
-
-destructor TShtCtl.Destroy;
-begin
-  sheets.free;
-  inherited;
-end;
-
-function TShtCtl.allock: integer;
-const
-  SHEET_USE = 1;
-var
-  s: TSHEET;
-begin
-  s.flags := SHEET_USE;
-  s.visible := True;
-  result := sheets.Add(s);
-end;
-
-procedure TShtCtl.Init(mem: TMEMMAN; x, y: integer);
-begin
-  xsize := x;
-  ysize := y;
-  sheets.Clear;
-end;
-
-procedure TShtCtl.refresh(rect: TRect);
-var
-  i: integer;
-  x: integer;
-  y: integer;
-  vx, vy: integer;
-  c: Byte;
-  clip: TRect;
-begin
-  if rect.Left < 0 then
-    rect.Left := 0;
-  if rect.Right >= xsize then
-    rect.Right := xsize;
-  if rect.Top < 0 then
-    rect.Top := 0;
-  if rect.Bottom >= ysize then
-    rect.Bottom := ysize;
-  for i := 0 to sheets.Count - 1 do
-    with sheets[i] do
-    begin
-      clip.Left := rect.Left - vx0;
-      clip.Right := rect.Right - vx0;
-      clip.Top := rect.Top - vy0;
-      clip.Bottom := rect.Bottom - vy0;
-      if clip.Left < 0 then
-        clip.Left := 0;
-      if clip.Right > bxsize then
-        clip.Right := bxsize;
-      if clip.Top < 0 then
-        clip.Top := 0;
-      if clip.Bottom > bysize then
-        clip.Bottom := bysize;
-      for y := clip.Top to clip.Bottom - 1 do
-      begin
-        vy := vy0 + y;
-        for x := clip.Left to clip.Right - 1 do
-        begin
-          vx := vx0 + x;
-          c := buf[y * bxsize + x];
-          if c <> col_inv then
-            vram[vy * xsize + vx] := c;
-        end;
-      end;
-    end;
-end;
-
-procedure TShtCtl.setbuf(index: integer; buffer: TBytes;
-  xsize, ysize, col_inv: integer);
-var
-  s: TSHEET;
-begin
-  s.buf := buffer;
-  s.bxsize := xsize;
-  s.bysize := ysize;
-  s.col_inv := col_inv;
-  sheets[index] := s;
-end;
-
-procedure TShtCtl.slide(index, x, y: integer);
-var
-  i, j: integer;
-  p: ^TSHEET;
-begin
-  p := TList(sheets)[index];
-  with p^ do
-  begin
-    i := vx0;
-    j := vy0;
-    vx0 := x;
-    vy0 := y;
-    if visible = True then
-    begin
-      refresh(rect(i, j, i + bxsize, j + bysize));
-      refresh(rect(x, y, x + bxsize, y + bysize));
-    end;
-  end;
-end;
-
-procedure TShtCtl.updown(index, height: integer);
-var
-  p: ^TSHEET;
-begin
-  if height >= sheets.Count then
-    height := sheets.Count - 1;
-  if height < -1 then
-    height := -1;
-  if height >= 0 then
-  begin
-    sheets.Move(index, height);
-    if sheets[height].visible = false then
-    begin
-      p := TList(sheets)[height];
-      p^.visible := True;
-    end;
-  end
-  else
-  begin
-    p := TList(sheets)[index];
-    p^.visible := false;
-  end;
-end;
-
-{ TPallet }
-
-constructor TPallet.Create;
-begin
-  inherited;
-  hankaku := TResourceStream.Create(HInstance, 'hankaku', RT_RCDATA);
-end;
-
-destructor TPallet.Destroy;
-begin
-  hankaku.free;
-  inherited;
-end;
-
-procedure TPallet.Init;
-const
-  table: array [0 .. 14, 0 .. 2] of Byte = (($00, $00, $00), ($FF, $00, $00),
-    ($00, $FF, $00), ($FF, $FF, $00), ($00, $00, $FF), ($FF, $00, $FF),
-    ($00, $FF, $FF), ($C6, $C6, $C6), ($84, $00, $00), ($00, $84, $00),
-    ($84, $84, $00), ($00, $00, $84), ($84, $00, $84), ($00, $84, $84),
-    ($84, $84, $84));
-begin
-  setp(0, 15, TBytes(@table));
-end;
-
-procedure TPallet.mouse_cursor8(mouse: TBytes; bc: Int8);
-const
-  cursor: array [0 .. 15] of string[16] = ( //
-    ('**************..'), //
-    ('*00000000000*...'), //
-    ('*0000000000*....'), //
-    ('*000000000*.....'), //
-    ('*00000000*......'), //
-    ('*0000000*.......'), //
-    ('*0000000*.......'), //
-    ('*00000000*......'), //
-    ('*0000**000*.....'), //
-    ('*000*..*000*....'), //
-    ('*00*....*000*...'), //
-    ('*0*......*000*..'), //
-    ('**........*000*.'), //
-    ('*..........*000*'), //
-    ('............*00*'), //
-    ('.............***') //
-    );
-var
-  x: integer;
-  y: integer;
-begin
-  for y := 0 to 15 do
-    for x := 0 to 15 do
-      case cursor[y][x] of // x , y ?
-        '*':
-          mouse[y * 16 + x] := COL8_000000;
-        '0':
-          mouse[y * 16 + x] := COL8_FFFFFF;
-        '.':
-          mouse[y * 16 + x] := bc;
-      end;
-end;
-
-procedure TPallet.putfont8(vram: TBytes; xsize, x, y: integer; c: Int8;
-  font: TBytes);
-var
-  i: integer;
-  p: TBytes;
-  d: Byte;
-begin
-  for i := 0 to 16 do
-  begin
-    p := TBytes(@vram[(y + i) * xsize + x]);
-    d := font[i];
-    if d and $80 <> 0 then
-      p[0] := c;
-    if d and $40 <> 0 then
-      p[1] := c;
-    if d and $20 <> 0 then
-      p[2] := c;
-    if d and $10 <> 0 then
-      p[3] := c;
-    if d and $08 <> 0 then
-      p[4] := c;
-    if d and $04 <> 0 then
-      p[5] := c;
-    if d and $02 <> 0 then
-      p[6] := c;
-    if d and $01 <> 0 then
-      p[7] := c;
-  end;
-end;
-
-procedure TPallet.putfonts8_asc(vram: TBytes; xsize, x, y: integer; c: Int8;
-  s: string);
-var
-  i: integer;
-  buf: array [0 .. 15] of Byte;
-begin
-  s := LowerCase(s);
-  for i := 1 to Length(s) do
-  begin
-    hankaku.Write(TBytes(@buf), Ord(s[i]), 16);
-    putfont8(vram, xsize, x, y, c, TBytes(@buf));
-    inc(x, 8);
-  end;
-end;
-
-procedure TPallet.setp(start, endpos: integer; rgb: TBytes);
-var
-  eflags: integer;
-  i, j: integer;
-begin
-  eflags := io_load_eflags;
-  io_cli;
-  io_out8($03C8, start);
-  j := 0;
-  for i := start to endpos - 1 do
-  begin
-    io_out8($03C9, rgb[j + 0] div 4);
-    io_out8($03C9, rgb[j + 1] div 4);
-    io_out8($03C9, rgb[j + 2] div 4);
-    inc(j, 3);
-  end;
-  io_store_eflags(eflags);
-end;
-
-{ TScreen }
-
-procedure TScreen.boxfill8(vram: TBytes; xsize: integer; c: UInt8;
-  x0, y0, x1, y1: integer);
-var
-  y: integer;
-  x: integer;
-begin
-  for y := y0 to y1 do
-    for x := x0 to x1 do
-      vram[y * xsize + x] := c;
-end;
-
-constructor TScreen.Create(vram: TBytes; x, y: integer);
+constructor TMouse.Create(fifo: TFifo; data0: integer);
 begin
   inherited Create;
-  boxfill8(vram, x, COL8_008484, 0, 0, x - 1, y - 29);
-  boxfill8(vram, x, COL8_C6C6C6, 0, y - 28, x - 1, y - 28);
-  boxfill8(vram, x, COL8_FFFFFF, 0, y - 27, x - 1, y - 27);
-  boxfill8(vram, x, COL8_C6C6C6, 0, y - 26, x - 1, y - 1);
-
-  boxfill8(vram, x, COL8_FFFFFF, 3, y - 24, 59, y - 24);
-  boxfill8(vram, x, COL8_FFFFFF, 2, y - 24, 2, y - 4);
-  boxfill8(vram, x, COL8_848484, 3, y - 4, 59, y - 4);
-  boxfill8(vram, x, COL8_848484, 59, y - 23, 59, y - 5);
-  boxfill8(vram, x, COL8_000000, 2, y - 3, 59, y - 3);
-  boxfill8(vram, x, COL8_000000, 60, y - 24, 60, y - 3);
-
-  boxfill8(vram, x, COL8_848484, x - 47, y - 24, x - 4, y - 24);
-  boxfill8(vram, x, COL8_848484, x - 47, y - 23, x - 47, y - 4);
-  boxfill8(vram, x, COL8_FFFFFF, x - 47, y - 3, x - 4, y - 3);
-  boxfill8(vram, x, COL8_FFFFFF, x - 3, y - 24, x - 3, y - 3);
+  mousedata := data0;
+  Self.fifo := fifo;
+  wait_KBC_sendready();
+  io_out8(PORT_KEYCMD, KEYCMD_SENDTO_MOUSE);
+  wait_KBC_sendready();
+  io_out8(PORT_KEYDAT, MOUSECMD_ENABLE);
+  dec.phase := 0;
 end;
-
-{ TMouse }
 
 function TMouse.decode(dat: UInt8): integer;
 begin
@@ -726,15 +394,6 @@ begin
   end;
 end;
 
-procedure TMouse.enable_mouse;
-begin
-  wait_KBC_sendready;
-  io_out8(PORT_KEYCMD, KEYCMD_SENDTO_MOUSE);
-  wait_KBC_sendready;
-  io_out8(PORT_KEYDAT, MOUSECMD_ENABLE);
-  dec.phase := 0;
-end;
-
 procedure TMouse.inthandler21(var esp: integer);
 var
   i: integer;
@@ -742,7 +401,7 @@ begin
   io_out8(PIC1_OCW2, $64);
   io_out8(PIC0_OCW2, $62);
   i := io_in8(PORT_KEYDAT);
-  Put(i);
+  fifo.Put(i + mousedata);
 end;
 
 { TDevice }
@@ -756,9 +415,11 @@ end;
 
 { TKeyboard }
 
-constructor TKeyboard.Create(size: integer; buf: TBytes);
+constructor TKeyboard.Create(fifo: TFifo; data0: integer);
 begin
-  inherited;
+  inherited Create;
+  Self.fifo := fifo;
+  keydata := data0;
   wait_KBC_sendready;
   io_out8(PORT_KEYCMD, KEYCMD_WRITE_MODE);
   wait_KBC_sendready;
@@ -771,7 +432,7 @@ var
 begin
   io_out8(PIC0_OCW2, $61);
   i := io_in8(PORT_KEYDAT);
-  Put(i);
+  fifo.Put(i + keydata);
 end;
 
 end.

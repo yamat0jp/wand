@@ -152,12 +152,12 @@ const
   DSKCAC: UInt32 = $00100000;
   DSKCAC0: UInt32 = $00008000;
 
-  CYLS: UInt16 = $0ff0;
-  LEDS: UInt16 = $0ff1;
-  VMODE: UInt16 = $0ff2;
-  SCRNX: UInt16 = $0ff4;
-  SCRNY: UInt16 = $0ff6;
-  VRAM: UInt16 = $0ff8;
+  CYLS: UInt16 = $0FF0;
+  LEDS: UInt16 = $0FF1;
+  VMODE: UInt16 = $0FF2;
+  SCRNX: UInt16 = $0FF4;
+  SCRNY: UInt16 = $0FF6;
+  VRAM: UInt16 = $0FF8;
   asm
     // ORG
 
@@ -234,7 +234,7 @@ const
 
   @skip:
     MOV   ESP,[EBX+12]
-    //JMP   DWORD PTR 2*8:$0000001b
+    // JMP   DWORD PTR 2*8:$0000001b
 
   @waitkbdout:
     IN    AL,$64
@@ -268,7 +268,7 @@ end;
 class procedure TAsmhead.Init;
 const
   CYLS: UInt32 = 10;
-asm
+  asm
 
 end;
 
