@@ -13,18 +13,18 @@ type
     vram: TBytes;
   end;
 
-  TFIFO8 = record
+  TFIFO32 = record
     buf: array of UInt32;
     p, q, size, free, flags: integer;
   end;
 
   TFifo = class
   private
-    fifo: TFIFO8;
+    fifo: TFIFO32;
   public
     constructor Create(size: integer);
     destructor Destroy; override;
-    function Put(data: Byte): integer;
+    function Put(data: integer): integer;
     function Get: SmallInt;
     function Status: integer;
   end;
@@ -46,9 +46,14 @@ type
   end;
 
   TKeyboard = class(TDevice)
+  const
+    cursor_c = COL8_FFFFFF;
   private
     keydata: integer;
+    procedure make_table(const keys1, keys2: array of const);
   public
+    keytable0, keytable1: array [$00 .. $80] of Byte;
+    cursor_x: integer;
     constructor Create(fifo: TFifo; data0: integer);
     procedure inthandler21(var esp: integer); override;
   end;
@@ -154,7 +159,7 @@ begin
   fifo.q := 0;
 end;
 
-function TFifo.Put(data: Byte): integer;
+function TFifo.Put(data: integer): integer;
 begin
   if fifo.free = 0 then
   begin
@@ -423,7 +428,21 @@ begin
   wait_KBC_sendready;
   io_out8(PORT_KEYCMD, KEYCMD_WRITE_MODE);
   wait_KBC_sendready;
-  io_out8(PORT_KEYDAT, KBC_MODE)
+  io_out8(PORT_KEYDAT, KBC_MODE);
+  make_table([0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '^',
+    $08, 0, 'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '@', '[', $0A, 0,
+    'A', 'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', ';', ':', 0, 0, ']', 'Z', 'X',
+    'C', 'V', 'B', 'N', 'M', ',', '.', '/', 0, '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3',
+    '0', '.', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, $5C, 0, 0, 0, 0, 0, 0, 0, 0, 0, $5C, 0, 0],
+    [0, 0, '!', $22, '#', '$', '%', '&', $27, '(', ')', '~', '=', '~', $08, 0,
+    'Q', 'W', 'E', 'R', 'T', 'Y', 'U', 'I', 'O', 'P', '`', '{', $0A, 0, 'A',
+    'S', 'D', 'F', 'G', 'H', 'J', 'K', 'L', '+', '*', 0, 0, '}', 'Z', 'X', 'C',
+    'V', 'B', 'N', 'M', '<', '>', '?', 0, '*', 0, ' ', 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, '7', '8', '9', '-', '4', '5', '6', '+', '1', '2', '3', '0',
+    '.', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, '_', 0, 0, 0, 0, 0, 0, 0, 0, 0, '|', 0, 0]);
 end;
 
 procedure TKeyboard.inthandler21(var esp: integer);
@@ -433,6 +452,16 @@ begin
   io_out8(PIC0_OCW2, $61);
   i := io_in8(PORT_KEYDAT);
   fifo.Put(i + keydata);
+end;
+
+procedure TKeyboard.make_table(const keys1, keys2: array of const);
+var
+  i: integer;
+begin
+  for i := 0 to High(keys1) do
+    keytable0[i] := keys1[i].VType;
+  for i := 0 to High(keys2) do
+    keytable1[i] := keys2[i].VType;
 end;
 
 end.

@@ -7,7 +7,9 @@ uses
   System.Classes,
   bootpack in 'bootpack.pas',
   asmhead in 'asmhead.pas',
-  graphic in 'graphic.pas';
+  graphic in 'graphic.pas',
+  timer in 'timer.pas',
+  func in 'func.pas';
 
 const
   MEMMAN_ADDR = $003C0000;
@@ -15,6 +17,7 @@ const
 var
   binfo: ^TBOOTINFO = Pointer(ADR_BOOTINFO);
   mouse: TMouse;
+  ctl: TCtl;
   keyboard: TKeyboard;
   i: SmallInt;
   memtest: TMemtest;
@@ -35,7 +38,8 @@ begin
   fifo := TFifo.Create(128);
   keyboard := TKeyboard.Create(fifo, 216);
   mouse := TMouse.Create(fifo, 512);
-  sheet := TShtCtl.Create(binfo^.scrnx,binfo^.scrny);
+  ctl := TCtl.Create(fifo);
+  sheet := TShtCtl.Create(binfo^.scrnx, binfo^.scrny);
   mo := TCursor.Create(16, 16, 99);
   win := TWindow.Create(160, 68, 'Window', -1);
   try
@@ -67,23 +71,31 @@ begin
     while True do
     begin
       io_cli;
-      if fifo.Status + fifo.Status = 0 then
+      if fifo.Status = 0 then
         io_stihlt
       else
       begin
-        if fifo.Status <> 0 then
+        i := fifo.Get;
+        io_sti;
+        if (i >= 256) and (i <= 511) then
+          with keyboard do
+          begin
+            if i >= $54 + 256 then
+              if (keytable0[i - 256] <> 0) and (cursor_x < 144) then
+              begin
+                s[1] := Char(keytable0[i - 256]);
+                win.putfonts8_asc_sht(cursor_x, 28, s);
+                inc(cursor_x, 8);
+              end;
+            if (i <= 256 + $0E) and (cursor_x > 8) then
+            begin
+              win.putfonts8_asc_sht(cursor_x, 28, ' ');
+              dec(cursor_x, 8);
+            end;
+            win.boxfill8(cursor_c, cursor_x, 28, cursor_x + 8, 44);
+          end
+        else if (i >= 512) and (i <= 711) then
         begin
-          i := fifo.Get;
-          io_sti;
-          // sprintf
-          sheet.screen.boxfill8(COL8_008484, 0, 16, 15, 31);
-          sheet.screen.putfonts8_asc_sht(0, 16, s);
-          sheet.refresh(0, 16, 16, 32);
-        end
-        else if fifo.Status <> 0 then
-        begin
-          i := fifo.Get;
-          io_sti;
           if mouse.decode(i) <> 0 then
           begin
             // sprontf
@@ -102,15 +114,22 @@ begin
               mx := 0;
             if my < 0 then
               my := 0;
-            if mx > binfo^.scrnx - 1 then
-              mx := binfo^.scrnx - 1;
-            if my > binfo^.scrny - 1 then
-              my := binfo^.scrny - 1;
+            if mx > sheet.screen.bxsize - 1 then
+              mx := sheet.screen.bxsize - 1;
+            if my > sheet.screen.bysize - 1 then
+              my := sheet.screen.bysize - 1;
             // sprintf
             sheet.screen.boxfill8(COL8_008484, 0, 0, 78, 15);
             sheet.screen.putfonts8_asc_sht(0, 0, s);
             sheet.refresh(0, 0, 80, 16);
             sheet.slide(mo, mx, my);
+          end;
+          if fifo.Status <> 0 then
+          begin
+            i := fifo.Get;
+            io_sti;
+            sheet.screen.putfonts8_asc_sht(0, 64, '10sec');
+            sheet.refresh(0, 64, 56, 80);
           end;
           sheet.refresh(0, 0, 80, 16);
         end;
