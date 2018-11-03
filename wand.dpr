@@ -8,7 +8,7 @@ uses
   bootpack in 'bootpack.pas',
   asmhead in 'asmhead.pas',
   graphic in 'graphic.pas',
-  timer in 'timer.pas',
+  contrl in 'contrl.pas',
   func in 'func.pas';
 
 const
