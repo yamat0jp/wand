@@ -25,7 +25,7 @@ const
 
 type
   TBOOTINFO = record
-    cyls, legs, vmode, reserve: Int8;
+    cyls, leds, vmode, reserve: Int8;
     scrnx, scrny: Int16;
     vram: TBytes;
   end;
@@ -180,6 +180,17 @@ type
     function memfree(mem: TMEMMAN; addr, size: Cardinal): integer;
   end;
 
+  TDesk = class
+  public
+    constructor Create;
+  end;
+
+  TPic = class
+  public
+    constructor Create;
+    procedure inthandler27(var esp: integer);
+  end;
+
   TSheet = class
   private const
     table: array [0 .. 14, 0 .. 2] of Byte = (($00, $00, $00), ($FF, $00, $00),
@@ -228,9 +239,9 @@ type
 
   TConsole = class(TWindow)
   private
-    fifo: TFifo;
     ctl: TCtl;
   public
+    fifo: TFifo;
     constructor Create(xsize, ysize: integer; title: string; act: integer);
     destructor Destroy; override;
   end;
@@ -877,6 +888,7 @@ var
   x: Boolean;
   j: integer;
 begin
+  x := false;
   for i := 0 to High(task) do
   begin
     s := task[i];
@@ -989,8 +1001,9 @@ procedure TShtCtl.refresh(obj: TSheet);
 var
   arect: TRect;
 begin
-  arect:=obj.clip;
-  refresh(arect.Left+obj.vx0,arect.Top+obj.vy0,arect.Right+obj.vx0,arect.Bottom+obj.vy0);
+  arect := obj.clip;
+  refresh(arect.Left + obj.vx0, arect.top + obj.vy0, arect.Right + obj.vx0,
+    arect.Bottom + obj.vy0);
 end;
 
 procedure TShtCtl.refreshmap(arect: TRect);
@@ -1340,7 +1353,7 @@ end;
 
 constructor TConsole.Create(xsize, ysize: integer; title: string; act: integer);
 var
-  i, c: integer;
+  i: integer;
   s: TTask;
   str: string;
 begin
@@ -1383,6 +1396,15 @@ begin
         clip := rect(cursor_x, 28, cursor_x + 8, 44);
         refresh := true;
       end;
+      case i of
+        2:
+          cursor_c := COL8_FFFFFF;
+        3:
+          begin
+            boxfill8(COL8_000000, cursor_x, 28, cursor_x + 7, 43);
+            cursor_c := -1;
+          end;
+      end;
       if (i >= 256) and (i <= 511) then
         if i = 8 + 256 then
         begin
@@ -1399,6 +1421,8 @@ begin
           putfonts8_asc(cursor_x, 28, 1, str);
           inc(cursor_x, 8);
         end;
+      if cursor_c >= 0 then
+        boxfill8(cursor_c, cursor_x, 28, cursor_x + 7, 43);
       boxfill8(cursor_c, cursor_x, 28, cursor_x + 7, 43);
       refresh := true;
     end;
@@ -1428,6 +1452,39 @@ begin
     fs := 1 * 8;
     gs := 1 * 8;
   end;
+end;
+
+{ TPic }
+
+constructor TPic.Create;
+begin
+  io_out8(PIC0_IMR, $FF);
+  io_out8(PIC1_IMR, $FF);
+
+  io_out8(PIC0_ICW1, $11);
+  io_out8(PIC0_ICW2, $20);
+  io_out8(PIC0_ICW3, 1 shl 2);
+  io_out8(PIC0_ICW4, $01);
+
+  io_out8(PIC1_ICW1, $11);
+  io_out8(PIC1_ICW2, $28);
+  io_out8(PIC1_ICW3, 2);
+  io_out8(PIC1_ICW4, $01);
+
+  io_out8(PIC0_IMR, $FB);
+  io_out8(PIC1_IMR, $FF);
+end;
+
+procedure TPic.inthandler27(var esp: integer);
+begin
+  io_out8(PIC0_OCW2, $67);
+end;
+
+{ TDesk }
+
+constructor TDesk.Create;
+begin
+
 end;
 
 end.

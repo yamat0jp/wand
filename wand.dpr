@@ -11,30 +11,36 @@ uses
 
 const
   MEMMAN_ADDR = $003C0000;
+  KEYCMD_LED = $ED;
 
 var
   binfo: ^TBOOTINFO = Pointer(ADR_BOOTINFO);
   mouse: TMouse;
   ctl: TCtl;
   keyboard: TKeyboard;
-  key_to: integer;
-  i: SmallInt;
+  key_to, key_shift, key_leds, keycmd_wait: integer;
+  i: integer;
   memtest: TMemtest;
   memtotal: Cardinal;
   memman: ^TMEMMAN = Pointer(MEMMAN_ADDR);
   mem: TMem;
+  pic: TPic;
   sheet: TShtCtl;
   mo, win, cons: TSheet;
   s: string;
-  fifo: TFifo;
+  fifo, keycmd: TFifo;
   mx, my: integer;
 
 begin
+  key_leds := (binfo^.leds shr 4) and 7;
+  keycmd_wait := -1;
+  pic := TPic.Create;
   {
     TAsmhead.Init;
     TAsmhead.Boot;
   }
   fifo := TFifo.Create(128);
+  keycmd := TFifo.Create(32);
   keyboard := TKeyboard.Create(fifo, 216);
   key_to := 0;
   mouse := TMouse.Create(fifo, 512);
@@ -67,11 +73,18 @@ begin
     sheet.slide(win, 80, 72);
     sheet.updown(mo, 1);
     sheet.updown(win, 2);
-    // sprintf
     sheet.screen.putfonts8_asc_sht(0, 32, s);
     sheet.refresh(0, 0, 80, 16);
+    keycmd.Put(KEYCMD_LED);
+    keycmd.Put(key_leds);
     while True do
     begin
+      if (keycmd.Status > 0) and (keycmd_wait < 0) then
+      begin
+        keycmd_wait := keycmd.Get;
+        keyboard.wait_KBC_sendready;
+        io_out8(TKeyboard.PORT_KEYDAT, keycmd_wait);
+      end;
       io_cli;
       if fifo.Status = 0 then
         io_stihlt
@@ -100,16 +113,20 @@ begin
               key_to := 1;
               sheet.updown(win, 0);
               sheet.updown(cons, 1);
+              cons.cursor_c:=-1;
+              (cons as TConsole).fifo.Put(2);
             end
             else
             begin
               key_to := 0;
               sheet.updown(win, 1);
               sheet.updown(cons, 0);
+              cons.cursor_c:=COL8_000000;
+              TConsole(cons).fifo.Put(3);
             end;
           end;
-          win.clip:=Rect(0,0,win.bxsize,21);
-          cons.clip:=Rect(0,0,cons.bxsize,21);
+          win.clip := Rect(0, 0, win.bxsize, 21);
+          cons.clip := Rect(0, 0, cons.bxsize, 21);
           sheet.refresh(win);
           sheet.refresh(cons);
           case i of
@@ -123,20 +140,20 @@ begin
               ;
             256 + $3A:
               begin
-                key_leds = key_leds * key_leds * key_leds * key_leds;
-                fifo.Put(KEYCMD_LED);
-                fifo.Put(key_leds);
+                key_leds := key_leds * key_leds * key_leds * key_leds;
+                keycmd.Put(KEYCMD_LED);
+                keycmd.Put(key_leds);
               end;
             256 + $45:
               begin
                 key_leds := key_leds * key_leds;
-                fifo.Put(KEYCMD_LED);
-                fifo.Put(key_leds);
+                keycmd.Put(KEYCMD_LED);
+                keycmd.Put(key_leds);
               end;
             256 + $46:
               begin
-                fifo.Put(KEYCMD_LED);
-                fifo.Put(key_leds);
+                keycmd.Put(KEYCMD_LED);
+                keycmd.Put(key_leds);
               end;
             256 + $FA:
               keycmd_wait := -1;
@@ -148,7 +165,7 @@ begin
           end;
           win.boxfill8(win.cursor_c, win.cursor_x, 28, win.cursor_x + 8, 44);
         end
-        else if (i >= 512) and (i <= 711) then
+        else if (i >= 512) and (i <= 767) then
         begin
           if mouse.decode(i) <> 0 then
           begin
@@ -172,7 +189,6 @@ begin
               mx := sheet.screen.bxsize - 1;
             if my > sheet.screen.bysize - 1 then
               my := sheet.screen.bysize - 1;
-            // sprintf
             sheet.screen.boxfill8(COL8_008484, 0, 0, 78, 15);
             sheet.screen.putfonts8_asc_sht(0, 0, s);
             sheet.refresh(0, 0, 80, 16);
@@ -186,11 +202,17 @@ begin
             sheet.refresh(0, 64, 56, 80);
           end;
           sheet.refresh(0, 0, 80, 16);
+        end
+        else if i <= 1 then
+        begin
+
         end;
       end;
     end;
   finally
+    pic.Free;
     fifo.Free;
+    keycmd.Free;
     sheet.Free;
     win.Free;
     mo.Free;
