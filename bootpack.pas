@@ -3,7 +3,8 @@ unit bootpack;
 interface
 
 uses
-  System.Classes, System.Generics.Collections, System.SysUtils, System.Types;
+  System.Classes, System.Generics.Collections, System.SysUtils, System.Types,
+  files;
 
 const
   COL8_000000 = 0;
@@ -191,6 +192,8 @@ type
     procedure inthandler27(var esp: integer);
   end;
 
+  TRefresh = procedure(Sender: TObject) of object;
+
   TSheet = class
   private const
     table: array [0 .. 14, 0 .. 2] of Byte = (($00, $00, $00), ($FF, $00, $00),
@@ -209,8 +212,8 @@ type
     bxsize, bysize, vx0, vy0, col_inv, flags: integer;
     visible: Boolean;
     hankaku: TResourceStream;
-    refresh: Boolean;
     clip: TRect;
+    OnRefresh: TRefresh;
     constructor Create(x, y, act: integer);
     destructor Destroy; override;
     procedure boxfill8(c: UInt8; x0, y0, x1, y1: integer); overload;
@@ -240,10 +243,21 @@ type
   TConsole = class(TWindow)
   private
     ctl: TCtl;
+    info: array of TFileInfo;
+    procedure newline;
+    procedure putchar(ch: Char; move: integer);
+    procedure putstr0(str: string);
+    procedure putstrl(str: string; length: integer);
   public
     fifo: TFifo;
+    cursor_y: integer;
+    files: TFiles;
     constructor Create(xsize, ysize: integer; title: string; act: integer);
     destructor Destroy; override;
+    procedure cmd_ls;
+    procedure cmd_type(param: string);
+    procedure cmd_mem;
+    procedure cmd_cls;
   end;
 
   TShtCtl = class
@@ -262,7 +276,7 @@ type
     destructor Destroy; override;
     procedure updown(sheet: TSheet; height: integer);
     procedure refresh(bx0, by0, bx1, by1: integer); overload;
-    procedure refresh(obj: TSheet); overload;
+    procedure refresh(Sender: TObject); overload;
     procedure slide(sheet: TSheet; x, y: integer);
     procedure delete(index: integer);
     procedure add(sheet: TSheet);
@@ -295,6 +309,7 @@ const
   AR_CODE32_ER = $409A;
   AR_TSS32 = $0089;
   AR_INTGATE32 = $008E;
+  ADR_DISKIMG = 0;
 
 implementation
 
@@ -786,16 +801,15 @@ end;
 
 constructor TCtl.Create(fifo: TFifo);
 var
-  i: integer;
+  i, j: integer;
   s, s0: TTask;
-  t: TTimer;
 begin
   inherited Create;
-  i := High(buf);
-  for i := 0 to i - 1 do
+  j := High(buf);
+  for i := 0 to j - 1 do
     buf[i] := TTask.Create;
-  buf[i] := TIdle.Create;
-  s0 := buf[i];
+  buf[j] := TIdle.Create;
+  s0 := buf[j];
   list := TList.Create;
   for i := 0 to High(task) do
     task[i] := TTaskCtl.Create;
@@ -816,7 +830,7 @@ end;
 
 destructor TCtl.Destroy;
 var
-  i, j: integer;
+  i: integer;
   s: TObject;
 begin
   for i := 0 to High(buf) do
@@ -959,6 +973,7 @@ end;
 procedure TShtCtl.add(sheet: TSheet);
 begin
   sheets.add(sheet);
+  sheet.OnRefresh := refresh;
   sheet.flags := SHEET_USE;
 end;
 
@@ -997,10 +1012,14 @@ begin
   end;
 end;
 
-procedure TShtCtl.refresh(obj: TSheet);
+procedure TShtCtl.refresh(Sender: TObject);
 var
   arect: TRect;
+  obj: TSheet;
 begin
+  obj := Sender as TSheet;
+  if Assigned(obj.OnRefresh) = false then
+    Exit;
   arect := obj.clip;
   refresh(arect.Left + obj.vx0, arect.top + obj.vy0, arect.Right + obj.vx0,
     arect.Bottom + obj.vy0);
@@ -1104,7 +1123,7 @@ begin
   if height < -1 then
     height := -1;
   if (height >= 0) and (sheet.flags = SHEET_USE) then
-    sheets.Move(j, height);
+    sheets.move(j, height);
 end;
 
 { TPallet }
@@ -1176,7 +1195,7 @@ var
   buf: array [0 .. 15] of Byte;
 begin
   s := LowerCase(s);
-  for i := 1 to Length(s) do
+  for i := 1 to length(s) do
   begin
     hankaku.Write(TBytes(@buf), Ord(s[i]), 16);
     putfont8(x, y, c, PChar(@buf));
@@ -1190,7 +1209,7 @@ begin
   clip := rect(x, y, x + bxsize * 8 - 1, y + 15);
   boxfill8(back, clip);
   putfonts8_asc(x, y, color, font);
-  refresh := true;
+  OnRefresh(Self);
 end;
 
 procedure TSheet.setp(start, endpos: integer; rgb: TBytes);
@@ -1351,22 +1370,50 @@ end;
 
 { TConsole }
 
+procedure TConsole.cmd_type(param: string);
+var
+  buf: TBytes;
+  i: integer;
+begin
+  i := files.search(Copy(param, 1, 5), info, 224);
+  if i > -1 then
+  begin
+    GetMem(Pointer(buf), info[i].size);
+    files.loadfile(info[i].clustno, info[i].size, buf,
+      Pointer(ADR_DISKIMG + $003E00));
+    putstrl(PChar(buf), info[i].size);
+    FreeMem(Pointer(buf));
+  end
+  else
+    putstr0('file not found.');
+end;
+
+procedure TConsole.cmd_cls;
+begin
+
+end;
+
 constructor TConsole.Create(xsize, ysize: integer; title: string; act: integer);
 var
   i: integer;
   s: TTask;
-  str: string;
+  cmd: string;
+  str: AnsiString;
+  j: integer;
 begin
   inherited;
   s := ctl.now;
   fifo := TFifo.Create(128);
   fifo.task := s;
+  files := TFiles.Create;
   cursor_x := 16;
+  cursor_y := 28;
   cursor_c := COL8_000000;
   ctl.run(ctl.MAX_TASKLEVELS - 1, 1);
   s.tss.esp := vram;
   ctl := TCtl.Create(fifo);
   ctl.settime(0, 50);
+  info := Pointer(ADR_DISKIMG + $002600);
   while true do
   begin
     io_cli;
@@ -1394,7 +1441,7 @@ begin
         end;
         boxfill8(cursor_c, cursor_x, 28, cursor_x + 7, 43);
         clip := rect(cursor_x, 28, cursor_x + 8, 44);
-        refresh := true;
+        OnRefresh(Self);
       end;
       case i of
         2:
@@ -1414,17 +1461,33 @@ begin
             dec(cursor_x, 8);
           end;
         end
+        else if i = 10 + 256 then
+        begin
+          putfonts8_asc_sht(cursor_x, cursor_y, ' ');
+          newline;
+          cmd := LowerCase(str);
+          if cmd = 'mem' then
+            cmd_mem
+          else if cmd = 'cls' then
+            cmd_cls
+          else if cmd = 'ls' then
+            cmd_ls
+          else if cmd = 'type' then
+            cmd_type(str)
+          else if Length(cmd) <> 0 then;
+        end
         else if cursor_x < 240 then
         begin
-          str[1] := Chr(i - 256);
-          str[2] := Chr(0);
-          putfonts8_asc(cursor_x, 28, 1, str);
+          cmd := LowerCase(str);
+          cmd[1] := Char(i - 256);
+          cmd[2] := Char(0);
+          putfonts8_asc(cursor_x, 28, 1, cmd);
           inc(cursor_x, 8);
         end;
       if cursor_c >= 0 then
         boxfill8(cursor_c, cursor_x, 28, cursor_x + 7, 43);
       boxfill8(cursor_c, cursor_x, 28, cursor_x + 7, 43);
-      refresh := true;
+      OnRefresh(Self);
     end;
   end;
 end;
@@ -1432,8 +1495,101 @@ end;
 destructor TConsole.Destroy;
 begin
   fifo.free;
+  files.free;
   ctl.free;
   inherited;
+end;
+
+procedure TConsole.cmd_ls;
+var
+  i: integer;
+  str: string;
+begin
+  for i := 0 to 223 do
+  begin
+    case Byte(info[i].name[1]) of
+      $00:
+        break;
+      $E5:
+        if Byte(info[i].tpye) and $18 = 0 then
+        begin
+          str := info[i].name;
+          str := str + info[i].ext;
+          putfonts8_asc_sht(8, cursor_y, str);
+          newline;
+        end;
+    end;
+  end;
+  newline;
+end;
+
+procedure TConsole.cmd_mem;
+begin
+
+end;
+
+procedure TConsole.newline;
+var
+  i: integer;
+  j: integer;
+begin
+  if cursor_y < 28 + 112 then
+    inc(cursor_y, 15)
+  else
+  begin
+    for i := 28 + 112 to 28 + 127 do
+      for j := 8 to 8 + 239 do
+        vram[j + i * bxsize] := vram[j + (i + 16) * bxsize];
+    for i := 28 to 28 + 111 do
+      for j := 8 to 8 + 239 do
+        vram[j + i * bxsize] := COL8_000000;
+    clip := rect(8, 28, 8 + 240, 128 + 28);
+    OnRefresh(Self);
+  end;
+end;
+
+procedure TConsole.putchar(ch: Char; move: integer);
+begin
+  if Byte(ch) = $09 then
+    while true do
+    begin
+      putfonts8_asc(cursor_x, cursor_y, 1, ch);
+      inc(cursor_x, 8);
+      if cursor_x = 8 + 240 then
+        newline
+      else if cursor_x - 8 and $1F = 0 then
+        break;
+    end
+  else if Byte(ch) = $0A then
+    newline
+  else if Byte(ch) = $0D then
+
+  else
+  begin
+    putfonts8_asc(cursor_x, cursor_y, 1, ch);
+    if move <> 0 then
+    begin
+      inc(cursor_x, 8);
+      if cursor_x = 8 + 240 then
+        newline;
+    end;
+  end;
+end;
+
+procedure TConsole.putstr0(str: string);
+var
+  i: integer;
+begin
+  for i := 1 to length(str) do
+    putchar(str[i], 1);
+end;
+
+procedure TConsole.putstrl(str: string; length: integer);
+var
+  i: integer;
+begin
+  for i := 1 to length do
+    putchar(str[i], 1);
 end;
 
 { TIdle }

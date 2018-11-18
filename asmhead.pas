@@ -4,9 +4,12 @@ interface
 
 type
   TAsmhead = class
+  private
+    procedure resb(count: integer); virtual;
+    procedure align16; virtual;
   public
-    class procedure Init;
-    class procedure Boot;
+    procedure Init;
+    procedure Boot;
   end;
 
 procedure io_halt;
@@ -146,8 +149,30 @@ end;
 
 { TAsmhead }
 
-class procedure TAsmhead.Boot;
+procedure TAsmhead.resb(count: integer);
+asm
+  MOV   ECX,count
+@start:
+  DB    $00
+  LOOP  @start
+  RET
+end;
+
+procedure TAsmhead.align16;
+asm
+  MOV   EBX,100 MOD 16
+  SUB   EAX,EBX
+  MOV   EBX,EAX
+  MOV   EAX,Self
+  MOV   EDX,[EAX]
+  CALL  [EDX + VMTOFFSET TAsmhead.resb(EBX)]
+  RET
+end;
+
+procedure TAsmhead.Boot;
 const
+  VBEMODE: UInt16 = $105;
+
   BOTPAK: UInt32 = $00280000;
   DSKCAC: UInt32 = $00100000;
   DSKCAC0: UInt32 = $00008000;
@@ -159,8 +184,40 @@ const
   SCRNY: UInt16 = $0FF6;
   VRAM: UInt16 = $0FF8;
   asm
-    // ORG
+    PUSH  EBP
+    MOV   EBP,$00c200
 
+    MOV   AX,$9000
+    MOV   ES,AX
+    MOV   DI,0
+    INT   $10
+    CMP   AX,$004f
+    JNE   @scrn320
+
+    MOV   AX,[ES:DI+4]
+    CMP   AX,$0200
+    JB    @scrn320
+
+    MOV   CX,VBEMODE
+    MOV   AX,$4f01
+    INT   $10
+    CMP   BYTE PTR [ES:DI+$1b],4
+    JNE   @scrn320
+    MOV   AX,[ES:DI+$00]
+    AND   AX,$0080
+    JZ    @scrn320
+
+    MOV   BX,VBEMODE+$4000
+    MOV   AX,$4f02
+    INT   $10
+    MOV   BYTE PTR [VMODE],8
+    MOV   AX,[ES:DI+$12]
+    MOV   [SCRNX],AX
+    MOV   EAX,[ES:DI+$28]
+    MOV   [VRAM],AX
+    JMP   @keystatus
+
+  @scrn320:
     MOV   AL,$13
     MOV   AH,$00
     INT   $10
@@ -169,6 +226,7 @@ const
     MOV   WORD PTR [SCRNY],200
     MOV   DWORD PTR [VRAM],$000a0000
 
+  @keystatus:
     MOV   AH,$02
     INT   $16
     MOV   BYTE PTR [LEDS],AL
@@ -189,7 +247,7 @@ const
     OUT   $60,AL
     CALL  @waitkbdout
 
-    // LGDT
+    LGDT  [@GDTR0]
     MOV   EAX,CR0
     AND   EAX,$7FFFFFFF
     OR    EAX,$00000001
@@ -234,7 +292,9 @@ const
 
   @skip:
     MOV   ESP,[EBX+12]
-    // JMP   DWORD PTR 2*8:$0000001b
+    MOV   EAX,2*8 shl 1
+    INC   EAX
+    JMP   EAX
 
   @waitkbdout:
     IN    AL,$64
@@ -246,13 +306,16 @@ const
     ADD   ESI,4
     MOV   EDI,[EAX]
     ADD   EDI,4
-    SUB   ECX,1
-    JNZ   @memcpy
+    LOOP  @memcpy
     RET
 
-    // ALIGNB
+    MOV   EAX,Self
+    MOV   EDX,[EAX]
+    CALL  DWORD PTR [EDX + VMTOFFSET TAsmhead.align16]
   @GDT0:
-    // RESB
+    MOV   EAX,Self
+    MOV   EDX,[EAX]
+    CALL  DWORD PTR [EDX + VMTOFFSET TAsmhead.resb(8)]
     DW    $ffff,$0000,$9200,$00cf
     DW    $ffff,$0000,$9a28,$0047
 
@@ -261,15 +324,112 @@ const
     DW    8*3-1
     DD    @GDT0
 
-    // ALIGNB
+    MOV   EAX,Self
+    MOV   EDX,[EAX]
+    CALL  DWORD PTR [EDX + VMTOFFSET TAsmhead.align16]
   @bootpack:
 end;
 
-class procedure TAsmhead.Init;
+procedure TAsmhead.Init;
 const
-  CYLS: UInt32 = 10;
+  CYLS: UInt8 = 10;
   asm
+    PUSH  EBP
+    MOV   EBP,$007c00
+    JMP   @entry
+    DB    $90
+    DB    'HARIBOTE'
+    DW    512
+    DB    1
+    DW    1
+    DB    2
+    DW    224
+    DW    2880
+    DB    $f0
+    DW    9
+    DW    18
+    DW    2
+    DD    0
+    DD    2880
+    DB    0,0,$29
+    DD    $ffffffff
+    DB    'HARIBOTEOS '
+    DB    'FAT12   '
+    MOV   EAX,Self
+    MOV   EDX,[EAX]
+    CALL  DWORD PTR [EDX + VMTOFFSET TAsmhead.resb(18)]
+  @entry:
+    MOV   AX,0
+    MOV   SS,AX
+    MOV   SP,$7c00
+    MOV   DS,AX
 
+    MOV   AX,$0820
+    MOV   ES,AX
+    MOV   CH,0
+    MOV   DH,0
+    MOV   CL,2
+  @readloop:
+    MOV   SI,0
+  @retry:
+    MOV   AH,$02
+    MOV   AL,1
+    MOV   BX,0
+    MOV   DL,$00
+    INT   $13
+    JNC   @next
+    ADD   SI,1
+    CMP   SI,5
+    JAE   @error
+    MOV   AH,$00
+    MOV   DL,$00
+    INT   $13
+    JMP   @retry
+  @next:
+    MOV   AX,ES
+    ADD   AX,$0020
+    MOV   ES,AX
+    ADD   CL,1
+    CMP   CL,18
+    JBE   @readloop
+    MOV   CL,1
+    ADD   DH,1
+    CMP   DH,2
+    JB    @readloop
+    MOV   DH,0
+    ADD   CH,1
+    CMP   CH,CYLS
+    JB    @readloop
+
+    MOV   [$0ff0],CH
+    MOV   EAX,$00c200
+    JMP   EAX
+  @error:
+    MOV   SI,WORD PTR @msg
+  @putloop:
+    MOV   AL,[SI]
+    ADD   SI,1
+    CMP   AL,0
+    JE    @fin
+    MOV   AH,$0e
+    MOV   BX,15
+    INT   $10
+    JMP   @putloop
+  @fin:
+    HLT
+    JMP   @fin
+  @msg:
+    DB    $0a,$0a
+    DB    'load error'
+    DB    $0a
+    DB    0
+    MOV   EAX,$7dfe
+    SUB   EAX,ESP
+    MOV   EBX,EAX
+    MOV   EAX,Self
+    MOV   EDX,[EAX]
+    CALL  DWORD PTR [EDX + VMTOFFSET TAsmhead.resb(EBX)]
+    DB    $55,$AA
 end;
 
 end.

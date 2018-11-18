@@ -7,7 +7,8 @@ uses
   System.Classes,
   bootpack in 'bootpack.pas',
   asmhead in 'asmhead.pas',
-  func in 'func.pas';
+  func in 'func.pas',
+  files in 'files.pas';
 
 const
   MEMMAN_ADDR = $003C0000;
@@ -30,15 +31,19 @@ var
   s: string;
   fifo, keycmd: TFifo;
   mx, my: integer;
+  asmhead: TAsmHead;
 
 begin
+{$IFDEF Win32}
+  Exit;
+{$ENDIF}
+  asmhead:=TAsmhead.Create;
+  asmhead.Init;
+  asmhead.Boot;
+  asmhead.Free;
   key_leds := (binfo^.leds shr 4) and 7;
   keycmd_wait := -1;
   pic := TPic.Create;
-  {
-    TAsmhead.Init;
-    TAsmhead.Boot;
-  }
   fifo := TFifo.Create(128);
   keycmd := TFifo.Create(32);
   keyboard := TKeyboard.Create(fifo, 216);
@@ -214,6 +219,7 @@ begin
     fifo.Free;
     keycmd.Free;
     sheet.Free;
+    ctl.Free;
     win.Free;
     mo.Free;
     keyboard.Free;
