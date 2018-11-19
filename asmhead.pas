@@ -7,9 +7,10 @@ type
   private
     procedure resb(count: integer); virtual;
     procedure align16; virtual;
-  public
     procedure Init;
     procedure Boot;
+  public
+    constructor Create;
   end;
 
 procedure io_halt;
@@ -160,9 +161,8 @@ end;
 
 procedure TAsmhead.align16;
 asm
-  MOV   EBX,100 MOD 16
-  SUB   EAX,EBX
-  MOV   EBX,EAX
+  MOV   EBX,ESP
+  AND   EBX,$00000001
   MOV   EAX,Self
   MOV   EDX,[EAX]
   CALL  [EDX + VMTOFFSET TAsmhead.resb(EBX)]
@@ -184,7 +184,6 @@ const
   SCRNY: UInt16 = $0FF6;
   VRAM: UInt16 = $0FF8;
   asm
-    PUSH  EBP
     MOV   EBP,$00c200
 
     MOV   AX,$9000
@@ -292,7 +291,7 @@ const
 
   @skip:
     MOV   ESP,[EBX+12]
-    MOV   EAX,2*8 shl 1
+    MOV   EAX,2*8 SHL 1
     INC   EAX
     JMP   EAX
 
@@ -330,11 +329,17 @@ const
   @bootpack:
 end;
 
+constructor TAsmhead.Create;
+begin
+  inherited;
+  Init;
+  Boot;
+end;
+
 procedure TAsmhead.Init;
 const
   CYLS: UInt8 = 10;
   asm
-    PUSH  EBP
     MOV   EBP,$007c00
     JMP   @entry
     DB    $90

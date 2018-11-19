@@ -35,11 +35,9 @@ var
 
 begin
 {$IFDEF Win32}
-  Exit;
+//  Exit;
 {$ENDIF}
   asmhead:=TAsmhead.Create;
-  asmhead.Init;
-  asmhead.Boot;
   asmhead.Free;
   key_leds := (binfo^.leds shr 4) and 7;
   keycmd_wait := -1;
